@@ -506,6 +506,10 @@ export function decompress (input, alphabet) {
     number >>= 1n;
   }
 
+  const pathSplitIndex = path.search(/[?#]/);
+  const pathBeforeQuery = pathSplitIndex === -1 ? path : path.slice(0, pathSplitIndex);
+  const pathFromQuery = pathSplitIndex === -1 ? "" : path.slice(pathSplitIndex);
+
   let output = ""
     + (isHTTPS ? "https://" : "http://")
     + (hasWWW ? "www." : "")
@@ -513,8 +517,9 @@ export function decompress (input, alphabet) {
     + domain
     + (tld ? "." + tld : "")
     + (hasPort ? ":" + port : "")
-    + path
-    + indexSuffix;
+    + pathBeforeQuery
+    + indexSuffix
+    + pathFromQuery;
 
   return output;
 }
