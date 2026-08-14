@@ -31,6 +31,21 @@ const testUrls = [
   "https://enterprise.covai.org/",
   "https://ta.wikipedia.org/wiki/%E0%AE%95%E0%AF%82%E0%AE%B4%E0%AF%88%E0%AE%95%E0%AF%8D%E0%AE%95%E0%AE%9F%E0%AE%BE",
 
+  // URLs with Common Extensions & Suffixes
+  "https://example.com/docs/annual-report.pdf",
+  "https://example.com/api/v1/users/data.json",
+  "https://example.com/assets/banner.png",
+  "https://example.com/photos/landscape.jpg",
+  "https://example.com/archive/backup.zip",
+  "https://example.com/readme.md",
+  "https://example.com/feed.xml",
+  "https://example.com/media/clip.mp4",
+
+  // URLs with UTM & Query Token Dictionaries
+  "https://shop.example.com/product/123?utm_source=twitter&utm_medium=social&utm_campaign=summer_sale&utm_content=banner",
+  "https://blog.example.com/post?ref=producthunt&tag=tech&page=2&lang=en",
+  "https://analytics.example.com/click?fbclid=IwAR1234567890&redirect=https://example.com",
+
   // Generic and Custom App URIs
   "magnet:?xt=urn:btih:dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c&dn=Big+Buck+Bunny",
   "obsidian://open?vault=Notes&file=Projects%2FPlan",

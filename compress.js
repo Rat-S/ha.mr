@@ -83,6 +83,90 @@ export const knownSchemes = [
   "vnc"
 ];
 
+export const commonTokens = [
+  // Marketing & UTM tracking keys
+  "utm_source",
+  "utm_medium",
+  "utm_campaign",
+  "utm_term",
+  "utm_content",
+  "fbclid",
+  "gclid",
+  // Common Query parameter keys
+  "ref",
+  "source",
+  "tag",
+  "id",
+  "page",
+  "q",
+  "v",
+  "t",
+  "lang",
+  "feature",
+  "si",
+  "token",
+  "redirect",
+  "next",
+  "callback",
+  "action",
+  "type",
+  "format",
+  "view",
+  "category",
+  // Common Path tokens
+  "comments",
+  "posts",
+  "articles",
+  "blog",
+  "news",
+  "wiki",
+  "docs",
+  "api",
+  "v1",
+  "v2",
+  "users",
+  "user",
+  "watch",
+  "search",
+  "profile",
+  "channel",
+  "status",
+  "item",
+  "video",
+  "photos",
+  "about",
+  "download"
+];
+
+export const commonSuffixes = [
+  // Web & Documents
+  ".html",
+  ".htm",
+  ".php",
+  ".json",
+  ".xml",
+  ".pdf",
+  ".txt",
+  ".md",
+  // Images & Media
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".webp",
+  ".svg",
+  ".gif",
+  ".mp4",
+  ".mp3",
+  // Archives & Code
+  ".zip",
+  ".tar.gz",
+  ".js",
+  ".css",
+  // Root indexes
+  "/index.html",
+  "/index.php"
+];
+
 const schemeSubalphabet = "abcdefghijklmnopqrstuvwxyz0123456789+-.";
 
 // Growing subcategories of the full URL alphabet
@@ -264,6 +348,16 @@ function encodeSegments (pathSegments, startNumber = 1n) {
     if (segment.type === "query") {
       queryParamIndex ++;
     }
+
+    const tokenIndex = commonTokens.indexOf(segment.value);
+    let tokenValid = tokenIndex !== -1;
+    let tokenNumber;
+    if (tokenValid) {
+      tokenNumber = (firstIteration ? number : number) * BigInt(commonTokens.length) + BigInt(tokenIndex);
+      tokenNumber *= BigInt(subalphabets.length + 2);
+      tokenNumber += BigInt(subalphabets.length + 1);
+    }
+
     let subalphabetIndex = subalphabets.length - 1;
     let subalphabet = subalphabets[subalphabetIndex];
     for (let i = 0; i < subalphabets.length - 1; i ++) {
@@ -290,7 +384,7 @@ function encodeSegments (pathSegments, startNumber = 1n) {
       }
     }
     if (huffmanValid) {
-      huffmanNumber *= BigInt(subalphabets.length + 1);
+      huffmanNumber *= BigInt(subalphabets.length + 2);
     }
     const subalphabetLength = BigInt(subalphabet.length + 1);
     let subalphabetNumber = firstIteration ? number : number * subalphabetLength;
@@ -298,20 +392,25 @@ function encodeSegments (pathSegments, startNumber = 1n) {
       subalphabetNumber *= subalphabetLength;
       subalphabetNumber += BigInt(subalphabet.indexOf(segment.value[i]) + 1);
     }
-    subalphabetNumber *= BigInt(subalphabets.length + 1);
+    subalphabetNumber *= BigInt(subalphabets.length + 2);
     subalphabetNumber += BigInt(subalphabetIndex + 1);
-    if (huffmanValid && huffmanNumber < subalphabetNumber) {
-      number = huffmanNumber;
-    } else {
-      number = subalphabetNumber;
+
+    let bestNumber = subalphabetNumber;
+    if (huffmanValid && huffmanNumber < bestNumber) {
+      bestNumber = huffmanNumber;
     }
+    if (tokenValid && tokenNumber < bestNumber) {
+      bestNumber = tokenNumber;
+    }
+    number = bestNumber;
   }
   return number;
 }
 
-function decodeSegments (number, currentSegmentType) {
+function decodeSegments (number, currentSegmentType, version = 1) {
   let path = "";
   let queryParamIndex = 0;
+  const variantDivisor = version >= 1 ? BigInt(subalphabets.length + 2) : BigInt(subalphabets.length + 1);
 
   while (number > 1n) {
     if (currentSegmentType === "path") {
@@ -328,8 +427,8 @@ function decodeSegments (number, currentSegmentType) {
       }
       queryParamIndex ++;
     }
-    const variant = Number(number % BigInt(subalphabets.length + 1));
-    number /= BigInt(subalphabets.length + 1);
+    const variant = Number(number % variantDivisor);
+    number /= variantDivisor;
     if (variant === 0) {
       while (number > 1n) {
         const { newNumber, digit } = huffmanDecode(number, pathDecode);
@@ -342,6 +441,10 @@ function decodeSegments (number, currentSegmentType) {
           number /= 256n;
         }
       }
+    } else if (version >= 1 && variant === subalphabets.length + 1) {
+      const tokenIndex = Number(number % BigInt(commonTokens.length));
+      number /= BigInt(commonTokens.length);
+      path += commonTokens[tokenIndex];
     } else {
       const subalphabet = subalphabets[variant - 1];
       const subalphabetLength = BigInt(subalphabet.length + 1);
@@ -390,10 +493,14 @@ function compressWeb (url, alphabet) {
 
   let path = url.pathname;
 
-  const hasIndexHTML = path.endsWith("/index.html");
-  const hasIndexPHP = path.endsWith("/index.php");
-  if (hasIndexHTML) path = path.slice(0, -11);
-  else if (hasIndexPHP) path = path.slice(0, -10);
+  let matchedSuffixIndex = -1;
+  for (let i = 0; i < commonSuffixes.length; i++) {
+    if (path.endsWith(commonSuffixes[i])) {
+      matchedSuffixIndex = i;
+      path = path.slice(0, -commonSuffixes[i].length);
+      break;
+    }
+  }
 
   const pathSegments = [];
   const rawSegments = path.split("/");
@@ -449,11 +556,22 @@ function compressWeb (url, alphabet) {
   number <<= 1n;
   if (knownSLD) number += 1n;
 
-  number <<= 1n;
-  if (hasIndexPHP) number += 1n;
-  if (hasIndexHTML || hasIndexPHP) {
+  if (VERSION >= 1) {
+    if (matchedSuffixIndex !== -1) {
+      number *= BigInt(commonSuffixes.length);
+      number += BigInt(matchedSuffixIndex);
+      number <<= 1n;
+      number += 1n;
+    } else {
+      number <<= 1n;
+    }
+  } else {
     number <<= 1n;
-    number += 1n;
+    if (matchedSuffixIndex === commonSuffixes.indexOf("/index.php")) number += 1n;
+    if (matchedSuffixIndex === commonSuffixes.indexOf("/index.html") || matchedSuffixIndex === commonSuffixes.indexOf("/index.php")) {
+      number <<= 1n;
+      number += 1n;
+    }
   }
 
   if (VERSION >= 1) {
@@ -700,7 +818,7 @@ export function decompress (input, alphabet) {
       const segmentTypeIndex = number % 3n;
       number /= 3n;
       const currentSegmentType = ["path", "query", "hash"][segmentTypeIndex];
-      path = decodeSegments(number, currentSegmentType);
+      path = decodeSegments(number, currentSegmentType, version);
       if (hasLeadingSlash) {
         if (!path.startsWith("/")) path = "/" + path;
       } else {
@@ -756,15 +874,25 @@ export function decompress (input, alphabet) {
   }
 
   let indexSuffix = "";
-  if (number & 1n) {
+  if (version >= 1) {
+    const hasSuffix = Boolean(number & 1n);
     number >>= 1n;
-    if (number & 1n) {
-      indexSuffix = "/index.php";
-    } else {
-      indexSuffix = "/index.html";
+    if (hasSuffix) {
+      const suffixIndex = Number(number % BigInt(commonSuffixes.length));
+      number /= BigInt(commonSuffixes.length);
+      indexSuffix = commonSuffixes[suffixIndex];
     }
+  } else {
+    if (number & 1n) {
+      number >>= 1n;
+      if (number & 1n) {
+        indexSuffix = "/index.php";
+      } else {
+        indexSuffix = "/index.html";
+      }
+    }
+    number >>= 1n;
   }
-  number >>= 1n;
 
   const hasKnownSLD = number & 1n;
   number >>= 1n;
@@ -803,7 +931,7 @@ export function decompress (input, alphabet) {
     const segmentTypeIndex = number % 3n;
     number /= 3n;
     const currentSegmentType = ["path", "query", "hash"][segmentTypeIndex];
-    path = decodeSegments(number, currentSegmentType);
+    path = decodeSegments(number, currentSegmentType, version);
   }
 
   const pathSplitIndex = path.search(/[?#]/);
