@@ -1,7 +1,51 @@
 /**
  * @file Implements link compression/decompression.
  */
-const VERSION = 1;
+const VERSION = 2;
+
+const UNSAFE_SCHEMES = new Set(["javascript", "data", "vbscript", "blob"]);
+
+/**
+ * Checks if a URI scheme is unsafe for browser execution/redirection.
+ * @param {string} scheme Scheme name
+ * @returns {boolean} True if unsafe
+ */
+export function isUnsafeScheme (scheme) {
+  if (!scheme) return false;
+  return UNSAFE_SCHEMES.has(scheme.toLowerCase().replace(/:$/, ""));
+}
+
+export const knownSchemes = [
+  "magnet",
+  "obsidian",
+  "vscode",
+  "mailto",
+  "tel",
+  "tg",
+  "spotify",
+  "irc",
+  "ircs",
+  "slack",
+  "sms",
+  "geo",
+  "steam",
+  "discord",
+  "matrix",
+  "ftp",
+  "ssh",
+  "sftp",
+  "file",
+  "webcal",
+  "torrent",
+  "ipfs",
+  "ipns",
+  "gemini",
+  "whatsapp",
+  "maps",
+  "wifi"
+];
+
+const schemeSubalphabet = "abcdefghijklmnopqrstuvwxyz0123456789+-.";
 
 // Growing subcategories of the full URL alphabet
 // Each also includes the hyphen and underscore as common separators
@@ -151,96 +195,29 @@ function huffmanDecode (number, lookup) {
   return { newNumber: number, digit: lookup[sequence] };
 }
 
-/**
- * Compresses the input link and encodes it to the given alphabet.
- * @param {string} input Link to compress
- * @param {string[]} alphabet Output alphabet as array of characters/strings
- * @returns {string} Output payload (not a full link!)
- */
-export function compress (input, alphabet) {
-  let number = 1n;
+function normalizePercentEncoding (str) {
+  return str.replace(/%[0-9a-fA-F]{2}|[^%!#$&'()*+,-./0-9:;=?@A-Z[\]_a-z~]/g, (match) => {
+    if (match.startsWith("%")) return match.toUpperCase();
+    return encodeURIComponent(match);
+  });
+}
 
-  // Validate URL, add protocol if needed
-  let url;
-  if (URL.canParse(input)) {
-    url = new URL(input);
-  } else {
-    url = new URL("http://" + input);
-  }
-
-  let hostname = url.hostname.toLowerCase();
-  const port = BigInt(url.port);
-  const tld = hostname.includes(".") && hostname.split(".").at(-1).toLowerCase();
-
-  if (tld in tldEncode) {
-    hostname = hostname.split(".").slice(0, -1).join(".");
-  }
-
-  const isHTTPS = url.protocol === "https:";
-  const hasWWW = url.hostname.toLowerCase().startsWith("www.");
-  if (hasWWW) hostname = hostname.slice(4);
-
-  const knownSLD = sldList.find(c => hostname.endsWith(c)) || "";
-  const subdomain = hostname.slice(0, -knownSLD.length);
-
-  // Read URL path, split it into segments
-  let path = url.pathname;
-
-  // Remove "index" suffixes, encoded separately later
-  const hasIndexHTML = path.endsWith("/index.html");
-  const hasIndexPHP = path.endsWith("/index.php");
-  if (hasIndexHTML) path = path.slice(0, -11);
-  else if (hasIndexPHP) path = path.slice(0, -10);
-
-  // The seperable parts of a path/query are split into segments with
-  // their position/role in the link noted. This lets us pick optimal
-  // character sets for individual segments and enables us to encode
-  // only the transitions between segments. As-is, the system's a bit
-  // clumsy, but it works.
-  const pathSegments = [];
-  const rawSegments = path.split("/");
-  for (let i = 0; i < rawSegments.length; i++) {
-    const seg = rawSegments[i];
-    if (seg.length > 0 || (i === rawSegments.length - 1 && i > 1)) {
-      pathSegments.push({ type: "path", value: seg });
-    }
-  }
-
-  // Add search/query parameters to path segments
-  let queryParams = Array.from(url.searchParams)
-    .flat()
-    .map(c => ({ type: "query", value: c }));
-  pathSegments.push(...queryParams);
-
-  // Add hash value to path segments
-  if (url.hash && url.hash.length > 1) {
-    pathSegments.push({ type: "hash", value: url.hash.slice(1) });
-  }
-
-  // Normalize path segment encoding
-  for (const segment of pathSegments) {
-    segment.value = encodeURI(decodeURI(segment.value));
-  }
-
-  // Encode path following domain segment-by-segment, using best algorithm for each
+function encodeSegments (pathSegments, startNumber = 1n) {
+  let number = startNumber;
   let lastSegmentType = pathSegments.at(-1)?.type;
   let queryParamIndex = 0;
   for (let j = pathSegments.length - 1; j >= 0; j --) {
     const segment = pathSegments[j];
     const firstIteration = j === pathSegments.length - 1;
     if (!firstIteration && queryParamIndex % 2 !== 1) {
-      // Indicate change of segment type (path -> param -> hash)
-      //   First bit indicates that a change is happening,
-      //   second bit indicates whether we're skipping straight to the hash.
       number <<= 1n;
       if (lastSegmentType === "hash" && segment.type === "query") {
         number ++;
       } else if (lastSegmentType === "hash" && segment.type === "path") {
-        number ++; // Second bit is 1
+        number ++;
         number <<= 1n;
         number ++;
       } else if (lastSegmentType !== segment.type) {
-        // Second bit is 0
         number <<= 1n;
         number ++;
       }
@@ -249,7 +226,6 @@ export function compress (input, alphabet) {
     if (segment.type === "query") {
       queryParamIndex ++;
     }
-    // Look for smallest subalphabet that fits this path segment
     let subalphabetIndex = subalphabets.length - 1;
     let subalphabet = subalphabets[subalphabetIndex];
     for (let i = 0; i < subalphabets.length - 1; i ++) {
@@ -259,7 +235,6 @@ export function compress (input, alphabet) {
         break;
       }
     }
-    // Compute number after Huffman coding
     let huffmanValid = true;
     let huffmanNumber = firstIteration ? number : huffmanEncode(number, pathEncode["#"]);
     for (let i = segment.value.length - 1; i >= 0; i --) {
@@ -276,31 +251,136 @@ export function compress (input, alphabet) {
         break;
       }
     }
-    // Encode segment variant as 0
-    // (We're adding +1 here to introduce 0 as a special value indicating Huffman)
     if (huffmanValid) {
       huffmanNumber *= BigInt(subalphabets.length + 1);
     }
-    // Compute number after encoding with chosen subalphabet
     const subalphabetLength = BigInt(subalphabet.length + 1);
     let subalphabetNumber = firstIteration ? number : number * subalphabetLength;
     for (let i = segment.value.length - 1; i >= 0; i--) {
       subalphabetNumber *= subalphabetLength;
       subalphabetNumber += BigInt(subalphabet.indexOf(segment.value[i]) + 1);
     }
-    // Encode segment variant as subalphabet index + 1
     subalphabetNumber *= BigInt(subalphabets.length + 1);
     subalphabetNumber += BigInt(subalphabetIndex + 1);
-    // Compare candidate numbers, pick smallest one
     if (huffmanValid && huffmanNumber < subalphabetNumber) {
       number = huffmanNumber;
     } else {
       number = subalphabetNumber;
     }
   }
+  return number;
+}
 
-  // Encode type of first path segment
+function decodeSegments (number, currentSegmentType) {
+  let path = "";
+  let queryParamIndex = 0;
+
+  while (number > 1n) {
+    if (currentSegmentType === "path") {
+      path += "/";
+    } else if (currentSegmentType === "hash") {
+      path += "#";
+    } else {
+      if (queryParamIndex % 2) {
+        path += "=";
+      } else if (queryParamIndex === 0) {
+        path += "?";
+      } else {
+        path += "&";
+      }
+      queryParamIndex ++;
+    }
+    const variant = Number(number % BigInt(subalphabets.length + 1));
+    number /= BigInt(subalphabets.length + 1);
+    if (variant === 0) {
+      while (number > 1n) {
+        const { newNumber, digit } = huffmanDecode(number, pathDecode);
+        number = newNumber;
+        if (digit === "#" && currentSegmentType !== "hash") break;
+        path += digit;
+        if (digit === "%") {
+          const byte = number % 256n;
+          path += byte.toString(16).toUpperCase().padStart(2, "0");
+          number /= 256n;
+        }
+      }
+    } else {
+      const subalphabet = subalphabets[variant - 1];
+      const subalphabetLength = BigInt(subalphabet.length + 1);
+      while (number > 1n) {
+        const index = Number(number % subalphabetLength);
+        number /= subalphabetLength;
+        if (index === 0) break;
+        path += subalphabet[index - 1];
+      }
+    }
+    if (queryParamIndex % 2) continue;
+    if (number & 1n) {
+      if (currentSegmentType === "path") {
+        number >>= 1n;
+        if (number & 1n) {
+          currentSegmentType = "hash";
+        } else {
+          currentSegmentType = "query";
+        }
+      } else {
+        currentSegmentType = "hash";
+      }
+    }
+    number >>= 1n;
+  }
+  return path;
+}
+
+function compressWeb (url, alphabet) {
+  let number = 1n;
+
+  let hostname = url.hostname.toLowerCase();
+  const port = BigInt(url.port);
+  const tld = hostname.includes(".") && hostname.split(".").at(-1).toLowerCase();
+
+  if (tld in tldEncode) {
+    hostname = hostname.split(".").slice(0, -1).join(".");
+  }
+
+  const isHTTPS = url.protocol === "https:";
+  const hasWWW = url.hostname.toLowerCase().startsWith("www.");
+  if (hasWWW) hostname = hostname.slice(4);
+
+  const knownSLD = sldList.find(c => hostname.endsWith(c)) || "";
+  const subdomain = hostname.slice(0, -knownSLD.length);
+
+  let path = url.pathname;
+
+  const hasIndexHTML = path.endsWith("/index.html");
+  const hasIndexPHP = path.endsWith("/index.php");
+  if (hasIndexHTML) path = path.slice(0, -11);
+  else if (hasIndexPHP) path = path.slice(0, -10);
+
+  const pathSegments = [];
+  const rawSegments = path.split("/");
+  for (let i = 0; i < rawSegments.length; i++) {
+    const seg = rawSegments[i];
+    if (seg.length > 0 || (i === rawSegments.length - 1 && i > 1)) {
+      pathSegments.push({ type: "path", value: seg });
+    }
+  }
+
+  let queryParams = Array.from(url.searchParams)
+    .flat()
+    .map(c => ({ type: "query", value: c }));
+  pathSegments.push(...queryParams);
+
+  if (url.hash && url.hash.length > 1) {
+    pathSegments.push({ type: "hash", value: url.hash.slice(1) });
+  }
+
+  for (const segment of pathSegments) {
+    segment.value = normalizePercentEncoding(segment.value);
+  }
+
   if (pathSegments.length > 0) {
+    number = encodeSegments(pathSegments, 1n);
     number *= 3n;
     if (pathSegments[0].type === "query") {
       number += 1n;
@@ -309,27 +389,21 @@ export function compress (input, alphabet) {
     }
   }
 
-  // Encode either SLD + subdomain or full hostname
   if (!knownSLD) {
-    // Write stopping token only if path follows
     if (pathSegments.length > 0) number = huffmanEncode(number, domainEncode["END"]);
     for (let i = hostname.length - 1; i >= 0; i --) {
       number = huffmanEncode(number, domainEncode[hostname[i]]);
     }
   } else {
-    // Encode subdomain
     if (subdomain) {
-      // Write stopping token only if path follows
       if (pathSegments.length > 0) number = huffmanEncode(number, domainEncode["END"]);
       for (let i = subdomain.length - 1; i >= 0; i--) {
         number = huffmanEncode(number, domainEncode[subdomain[i]]);
       }
     }
-    // Encode Huffman code of known SLD
     number = huffmanEncode(number, sldEncode[knownSLD]);
   }
 
-  // Indicate presence of known SLD and optional subdomain
   if (knownSLD) {
     number <<= 1n;
     if (subdomain) number += 1n;
@@ -337,26 +411,25 @@ export function compress (input, alphabet) {
   number <<= 1n;
   if (knownSLD) number += 1n;
 
-  // Encode "index.html"/"index.php" suffix
   number <<= 1n;
   if (hasIndexPHP) number += 1n;
   if (hasIndexHTML || hasIndexPHP) {
     number <<= 1n;
     number += 1n;
   }
-  // Encode protocol and "www." prefix
+
   if (VERSION >= 1) {
     if (isHTTPS && !hasWWW) {
-      number <<= 1n; // 0b0
+      number <<= 1n;
     } else if (isHTTPS && hasWWW) {
       number <<= 2n;
-      number += 1n; // 0b01 (first popped is 1, second popped is 0)
+      number += 1n;
     } else if (!isHTTPS && !hasWWW) {
       number <<= 3n;
-      number += 3n; // 0b011 (first popped is 1, second is 1, third is 0)
+      number += 3n;
     } else {
       number <<= 3n;
-      number += 7n; // 0b111 (first popped is 1, second is 1, third is 1)
+      number += 7n;
     }
   } else {
     number <<= 1n;
@@ -364,9 +437,9 @@ export function compress (input, alphabet) {
     number <<= 1n;
     if (hasWWW) number += 1n;
   }
-  // Encode TLD
+
   number = huffmanEncode(number, tldEncode[tld] || tldEncode[""]);
-  // Encode port number
+
   if (port) {
     number *= 65536n;
     number += port;
@@ -374,7 +447,10 @@ export function compress (input, alphabet) {
   number <<= 1n;
   if (port) number += 1n;
 
-  // Encode version number
+  if (VERSION >= 2) {
+    number <<= 1n; // isGenericURI = 0
+  }
+
   number <<= 1n;
   for (let i = 0; i < VERSION; i ++) {
     number <<= 1n;
@@ -382,6 +458,152 @@ export function compress (input, alphabet) {
   }
 
   return numberToString(number, alphabet);
+}
+
+function compressGeneric (scheme, hasSlashSlash, remainder, alphabet) {
+  let hash = "";
+  const hashIndex = remainder.indexOf("#");
+  if (hashIndex !== -1) {
+    hash = remainder.slice(hashIndex + 1);
+    remainder = remainder.slice(0, hashIndex);
+  }
+
+  let queryString = "";
+  const queryIndex = remainder.indexOf("?");
+  let pathString = remainder;
+  if (queryIndex !== -1) {
+    queryString = remainder.slice(queryIndex + 1);
+    pathString = remainder.slice(0, queryIndex);
+  }
+
+  const hasLeadingSlash = pathString.startsWith("/");
+  if (hasLeadingSlash) {
+    pathString = pathString.slice(1);
+  }
+
+  const pathSegments = [];
+  if (pathString.length > 0) {
+    const rawSegments = pathString.split("/");
+    for (let i = 0; i < rawSegments.length; i++) {
+      const seg = rawSegments[i];
+      if (seg.length > 0 || (i === rawSegments.length - 1 && i > 0)) {
+        pathSegments.push({ type: "path", value: seg });
+      }
+    }
+  }
+
+  if (queryString.length > 0) {
+    const params = queryString.split("&");
+    for (const param of params) {
+      const eqIdx = param.indexOf("=");
+      if (eqIdx !== -1) {
+        pathSegments.push({ type: "query", value: param.slice(0, eqIdx) });
+        pathSegments.push({ type: "query", value: param.slice(eqIdx + 1) });
+      } else {
+        pathSegments.push({ type: "query", value: param });
+        pathSegments.push({ type: "query", value: "" });
+      }
+    }
+  }
+
+  if (hash.length > 0) {
+    pathSegments.push({ type: "hash", value: hash });
+  }
+
+  for (const segment of pathSegments) {
+    segment.value = normalizePercentEncoding(segment.value);
+  }
+
+  let number = 1n;
+  if (pathSegments.length > 0) {
+    number = encodeSegments(pathSegments, 1n);
+    number *= 3n;
+    if (pathSegments[0].type === "query") {
+      number += 1n;
+    } else if (pathSegments[0].type === "hash") {
+      number += 2n;
+    }
+  }
+
+  number <<= 1n;
+  if (pathSegments.length > 0) number += 1n;
+
+  number <<= 1n;
+  if (hasLeadingSlash) number += 1n;
+
+  number <<= 1n;
+  if (hasSlashSlash) number += 1n;
+
+  const schemeIndex = knownSchemes.indexOf(scheme);
+  if (schemeIndex !== -1) {
+    number *= BigInt(knownSchemes.length);
+    number += BigInt(schemeIndex);
+    number <<= 1n;
+    number += 1n;
+  } else {
+    number *= 40n; // 0 = END
+    for (let i = scheme.length - 1; i >= 0; i--) {
+      const charIdx = schemeSubalphabet.indexOf(scheme[i]);
+      if (charIdx === -1) throw new Error(`Invalid character in scheme: ${scheme[i]}`);
+      number *= 40n;
+      number += BigInt(charIdx + 1);
+    }
+    number <<= 1n;
+  }
+
+  number <<= 1n;
+  number += 1n; // isGenericURI = 1
+
+  number <<= 1n;
+  for (let i = 0; i < VERSION; i++) {
+    number <<= 1n;
+    number += 1n;
+  }
+
+  return numberToString(number, alphabet);
+}
+
+/**
+ * Compresses the input link and encodes it to the given alphabet.
+ * @param {string} input Link to compress
+ * @param {string[]} alphabet Output alphabet as array of characters/strings
+ * @returns {string} Output payload (not a full link!)
+ */
+export function compress (input, alphabet) {
+  const schemeMatch = input.match(/^([a-zA-Z][a-zA-Z0-9+.-]*):(\/\/)?(.*)$/s);
+  if (schemeMatch && isUnsafeScheme(schemeMatch[1])) {
+    throw new Error("Unsupported or unsafe URI scheme");
+  }
+
+  let isWebURL = false;
+  let webUrl = null;
+  if (!schemeMatch || schemeMatch[1].toLowerCase() === "http" || schemeMatch[1].toLowerCase() === "https") {
+    try {
+      if (URL.canParse(input)) {
+        webUrl = new URL(input);
+      } else if (URL.canParse("http://" + input)) {
+        webUrl = new URL("http://" + input);
+      }
+      if (webUrl && (webUrl.protocol === "http:" || webUrl.protocol === "https:")) {
+        const host = webUrl.hostname.toLowerCase();
+        if (host && (host.includes(".") || host === "localhost")) {
+          isWebURL = true;
+        }
+      }
+    } catch {
+      isWebURL = false;
+    }
+  }
+
+  if (isWebURL && webUrl) {
+    return compressWeb(webUrl, alphabet);
+  }
+
+  if (schemeMatch) {
+    return compressGeneric(schemeMatch[1].toLowerCase(), Boolean(schemeMatch[2]), schemeMatch[3], alphabet);
+  }
+
+  return compressWeb(new URL("http://" + input), alphabet);
 }
 
 /**
@@ -394,7 +616,6 @@ export function compress (input, alphabet) {
 export function decompress (input, alphabet) {
   let number = stringToNumber(input, alphabet);
 
-  // Version number - currently unused
   let version = 0;
   while (number & 1n) {
     version ++;
@@ -402,7 +623,60 @@ export function decompress (input, alphabet) {
   }
   number >>= 1n;
 
-  // Decode port number
+  let isGenericURI = false;
+  if (version >= 2) {
+    isGenericURI = Boolean(number & 1n);
+    number >>= 1n;
+  }
+
+  if (isGenericURI) {
+    const isKnownScheme = Boolean(number & 1n);
+    number >>= 1n;
+    let scheme = "";
+    if (isKnownScheme) {
+      const schemeIndex = Number(number % BigInt(knownSchemes.length));
+      number /= BigInt(knownSchemes.length);
+      scheme = knownSchemes[schemeIndex];
+    } else {
+      while (true) {
+        const code = Number(number % 40n);
+        number /= 40n;
+        if (code === 0) break;
+        scheme += schemeSubalphabet[code - 1];
+      }
+    }
+
+    if (isUnsafeScheme(scheme)) throw new Error("Unsupported or unsafe URI scheme");
+
+    const hasSlashSlash = Boolean(number & 1n);
+    number >>= 1n;
+
+    const hasLeadingSlash = Boolean(number & 1n);
+    number >>= 1n;
+
+    const hasSegments = Boolean(number & 1n);
+    number >>= 1n;
+
+    let path = "";
+    if (hasSegments) {
+      const segmentTypeIndex = number % 3n;
+      number /= 3n;
+      const currentSegmentType = ["path", "query", "hash"][segmentTypeIndex];
+      path = decodeSegments(number, currentSegmentType);
+      if (hasLeadingSlash) {
+        if (!path.startsWith("/")) path = "/" + path;
+      } else {
+        if (path.startsWith("/")) path = path.slice(1);
+      }
+    } else if (hasLeadingSlash) {
+      path = "/";
+    }
+
+    const delimiter = hasSlashSlash ? "://" : ":";
+    return scheme + delimiter + path;
+  }
+
+  // Web URL pathway
   const hasPort = number & 1n;
   number >>= 1n;
   let port;
@@ -410,11 +684,11 @@ export function decompress (input, alphabet) {
     port = number % 65536n;
     number /= 65536n;
   }
-  // Decode TLD
+
   const tldDecodeResult = huffmanDecode(number, tldDecode);
   number = tldDecodeResult.newNumber;
   const tld = tldDecodeResult.digit;
-  // Decode protocol and "www." prefix
+
   let isHTTPS = false;
   let hasWWW = false;
   if (version >= 1) {
@@ -442,7 +716,7 @@ export function decompress (input, alphabet) {
     isHTTPS = Boolean(number & 1n);
     number >>= 1n;
   }
-  // Decode "index.html"/"index.php" suffix
+
   let indexSuffix = "";
   if (number & 1n) {
     number >>= 1n;
@@ -453,7 +727,7 @@ export function decompress (input, alphabet) {
     }
   }
   number >>= 1n;
-  // Determine domain format
+
   const hasKnownSLD = number & 1n;
   number >>= 1n;
   let hasSubdomain = false;
@@ -464,7 +738,6 @@ export function decompress (input, alphabet) {
 
   let domain = "";
   let subdomain = "";
-  let path = "";
 
   if (hasKnownSLD) {
     const sldDecodeResult = huffmanDecode(number, sldDecode);
@@ -487,70 +760,12 @@ export function decompress (input, alphabet) {
     }
   }
 
-  const segmentTypeIndex = number % 3n;
-  number /= 3n;
-  let currentSegmentType = ["path", "query", "hash"][segmentTypeIndex];
-
-  let queryParamIndex = 0;
-
-  while (number > 1n) {
-    if (currentSegmentType === "path") {
-      path += "/";
-    } else if (currentSegmentType === "hash") {
-      path += "#";
-    } else {
-      if (queryParamIndex % 2) {
-        path += "=";
-      } else if (queryParamIndex === 0) {
-        path += "?";
-      } else {
-        path += "&";
-      }
-      queryParamIndex ++;
-    }
-    // Get path segment variant
-    const variant = Number(number % BigInt(subalphabets.length + 1));
-    number /= BigInt(subalphabets.length + 1);
-    // Variant 0 is Huffman code, rest are subalphabets
-    if (variant === 0) {
-      while (number > 1n) {
-        const { newNumber, digit } = huffmanDecode(number, pathDecode);
-        number = newNumber;
-        if (digit === "#" && currentSegmentType !== "hash") break;
-        path += digit;
-        if (digit === "%") {
-          const byte = number % 256n;
-          path += byte.toString(16).toUpperCase().padStart(2, "0");
-          number /= 256n;
-        }
-      }
-    } else {
-      const subalphabet = subalphabets[variant - 1];
-      const subalphabetLength = BigInt(subalphabet.length + 1);
-      while (number > 1n) {
-        const index = Number(number % subalphabetLength);
-        number /= subalphabetLength;
-        if (index === 0) break;
-        path += subalphabet[index - 1];
-      }
-    }
-    // Handle changing between path segment types, unless we're in the
-    // middle of decoding a query parameter key/value pair, in which
-    // case switching to the hash value doesn't make sense.
-    if (queryParamIndex % 2) continue;
-    if (number & 1n) { // Changing segment type?
-      if (currentSegmentType === "path") {
-        number >>= 1n;
-        if (number & 1n) { // Skipping to hash?
-          currentSegmentType = "hash";
-        } else {
-          currentSegmentType = "query";
-        }
-      } else {
-        currentSegmentType = "hash";
-      }
-    }
-    number >>= 1n;
+  let path = "";
+  if (number > 1n) {
+    const segmentTypeIndex = number % 3n;
+    number /= 3n;
+    const currentSegmentType = ["path", "query", "hash"][segmentTypeIndex];
+    path = decodeSegments(number, currentSegmentType);
   }
 
   const pathSplitIndex = path.search(/[?#]/);

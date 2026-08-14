@@ -2,6 +2,7 @@ import { compress, decompress } from "./compress.js";
 import { outputAlphabetASCII, outputAlphabetQR, outputAlphabetEmoji } from "./alphabets.js";
 
 const testUrls = [
+  // Standard Web URLs
   "https://www.nytimes.com/games/wordle/index.html",
   "https://google.com/",
   "https://google.com",
@@ -28,7 +29,22 @@ const testUrls = [
   "http://httpbin.org/get?param1=hello%20world&param2=12345",
   "https://www.deadrat.in/posts/protecting-the-commons-from-the-machines/",
   "https://enterprise.covai.org/",
-  "https://ta.wikipedia.org/wiki/%E0%AE%95%E0%AF%82%E0%AE%B4%E0%AF%88%E0%AE%95%E0%AF%8D%E0%AE%95%E0%AE%9F%E0%AE%BE" 
+  "https://ta.wikipedia.org/wiki/%E0%AE%95%E0%AF%82%E0%AE%B4%E0%AF%88%E0%AE%95%E0%AF%8D%E0%AE%95%E0%AE%9F%E0%AE%BE",
+
+  // Generic and Custom App URIs
+  "magnet:?xt=urn:btih:dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c&dn=Big+Buck+Bunny",
+  "obsidian://open?vault=Notes&file=Projects%2FPlan",
+  "vscode://file/home/user/project/main.js:42:10",
+  "mailto:user@example.com?subject=Hello%20World&body=Test",
+  "tel:+1234567890",
+  "spotify:track:4cOdK2wGLETKBW3PvgPWqT",
+  "tg://resolve?domain=telegram",
+  "irc://irc.libera.chat:6697/ha.mr",
+  "slack://channel?team=T12345&id=C12345",
+  "steam://run/440",
+  "geo:37.7749,-122.4194?z=15",
+  "file:///home/user/documents/report.pdf",
+  "custom-app://action?param=123#frag"
 ];
 
 function normalizeUrl(url) {
@@ -40,7 +56,7 @@ function normalizeUrl(url) {
   }
 }
 
-console.log(`[1/2] Running round-trip test on ${testUrls.length} URLs across ASCII, QR, and Emoji...\n`);
+console.log(`[1/3] Running round-trip test on ${testUrls.length} URIs across ASCII, QR, and Emoji...\n`);
 
 let passed = 0;
 let failed = 0;
@@ -80,8 +96,40 @@ for (const url of testUrls) {
 
 console.log(`Roundtrip results: ${passed} passed, ${failed} failed (${testUrls.length} total)\n`);
 
+// Security Gatekeeper Verification
+console.log(`[2/3] Running Security Gatekeeper verification on unsafe URI schemes...`);
+const unsafeSchemes = [
+  "javascript:alert(1)",
+  "JAVASCRIPT:console.log('pwned')",
+  "data:text/html,<script>alert(1)</script>",
+  "vbscript:msgbox('hello')",
+  "blob:https://example.com/uuid"
+];
+
+let securityPassed = 0;
+let securityFailed = 0;
+
+for (const unsafeUri of unsafeSchemes) {
+  let blocked = false;
+  try {
+    compress(unsafeUri, outputAlphabetASCII);
+  } catch (err) {
+    if (err.message && err.message.includes("unsafe")) {
+      blocked = true;
+    }
+  }
+
+  if (blocked) {
+    securityPassed++;
+  } else {
+    console.error(`❌ Security gatekeeper failed to block unsafe scheme: ${unsafeUri}`);
+    securityFailed++;
+  }
+}
+console.log(`Security results: ${securityPassed} passed, ${securityFailed} failed (${unsafeSchemes.length} total)\n`);
+
 // Backwards compatibility tests with pre-computed Version 0 payloads
-console.log(`[2/2] Running backwards compatibility verification on Version 0 payloads...`);
+console.log(`[3/3] Running backwards compatibility verification on Version 0 payloads...`);
 const v0TestCases = [
   {
     payload: "CRa2cek=!Toa[&",
@@ -125,7 +173,7 @@ for (const { payload, alphabet, expected } of v0TestCases) {
 
 console.log(`V0 Compatibility results: ${v0Passed} passed, ${v0Failed} failed\n`);
 
-if (failed > 0 || v0Failed > 0) {
+if (failed > 0 || securityFailed > 0 || v0Failed > 0) {
   console.error("Test suite FAILED!");
   process.exit(1);
 } else {
